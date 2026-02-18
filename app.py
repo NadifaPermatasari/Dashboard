@@ -1,109 +1,81 @@
 import streamlit as st
 import pandas as pd
+import sqlite3
 import matplotlib.pyplot as plt
 
-st.set_page_config(page_title="Dashboard Bahan Baku Pupuk", layout="wide")
+# ========================
+# DATABASE
+# ========================
+conn = sqlite3.connect("bahan_baku.db", check_same_thread=False)
+c = conn.cursor()
 
-st.title("📊 Dashboard Monitoring Bahan Baku Pabrik Pupuk")
+c.execute("""
+CREATE TABLE IF NOT EXISTS stok (
+tanggal TEXT,
+bahan TEXT,
+stok_awal REAL,
+pemakaian REAL,
+stok_masuk REAL
+)
+""")
 
 # ========================
-# LOAD DATA
+# MENU
 # ========================
-df = pd.read_csv("C:/Magang/Magang Konversi SKS/Dashboard/Data bahan baku.csv")
-df["tanggal"] = pd.to_datetime(df["tanggal"])
-
-# Pilih bahan baku
-bahan_list = df["bahan"].unique()
-selected_bahan = st.sidebar.selectbox("Pilih Bahan Baku", bahan_list)
-
-df = df[df["bahan"] == selected_bahan]
-
-# Hitung stok akhir
-df["stok_akhir"] = df["stok_awal"] + df["stok_masuk"] - df["pemakaian"]
+menu = st.sidebar.selectbox("Menu", ["Input Data", "Dashboard"])
 
 # ========================
-# PARAMETER
+# INPUT DATA
 # ========================
-lead_time = st.sidebar.slider("Lead Time Supplier (hari)", 1, 14, 6)
+if menu == "Input Data":
+    st.title("📥 Input Data Bahan Baku")
 
-avg_consumption = df["pemakaian"].mean()
-max_consumption = df["pemakaian"].max()
+    tanggal = st.date_input("Tanggal")
+    bahan = st.selectbox("Bahan Baku", ["Amonia", "Fosfat", "Kalium"])
+    stok_awal = st.number_input("Stok Awal", 0)
+    pemakaian = st.number_input("Pemakaian Harian", 0)
+    stok_masuk = st.number_input("Stok Masuk", 0)
 
-safety_stock = max_consumption * lead_time
-rop = (avg_consumption * lead_time) + safety_stock
-
-current_stock = df["stok_akhir"].iloc[-1]
-doi = current_stock / avg_consumption
-
-# Status
-if current_stock < safety_stock:
-    status = "KRITIS"
-elif current_stock < rop:
-    status = "WARNING"
-else:
-    status = "AMAN"
+    if st.button("Simpan"):
+        c.execute("INSERT INTO stok VALUES (?,?,?,?,?)",
+                  (tanggal, bahan, stok_awal, pemakaian, stok_masuk))
+        conn.commit()
+        st.success("Data tersimpan!")
 
 # ========================
-# KPI
+# DASHBOARD
 # ========================
-col1, col2, col3, col4, col5 = st.columns(5)
+if menu == "Dashboard":
+    st.title("📊 Dashboard Monitoring")
 
-col1.metric("Stok Saat Ini", f"{current_stock:,.0f} ton")
-col2.metric("Konsumsi Rata-rata", f"{avg_consumption:,.0f} ton/hari")
-col3.metric("Days of Inventory", f"{doi:.1f} hari")
-col4.metric("Safety Stock", f"{safety_stock:,.0f} ton")
-col5.metric("Status", status)
+    df = pd.read_sql("SELECT * FROM stok", conn)
 
-st.divider()
+    if df.empty:
+        st.warning("Belum ada data.")
+    else:
+        df["tanggal"] = pd.to_datetime(df["tanggal"])
+        df["stok_akhir"] = df["stok_awal"] + df["stok_masuk"] - df["pemakaian"]
 
-# ========================
-# GRAFIK STOK & KONSUMSI
-# ========================
-st.subheader("📈 Tren Stok & Konsumsi")
+        avg_consumption = df["pemakaian"].mean()
+        max_consumption = df["pemakaian"].max()
+        lead_time = 6
 
-fig, ax = plt.subplots()
+        safety_stock = max_consumption * lead_time
+        rop = (avg_consumption * lead_time) + safety_stock
+        current_stock = df["stok_akhir"].iloc[-1]
+        doi = current_stock / avg_consumption
 
-ax.plot(df["tanggal"], df["stok_akhir"], label="Stok")
-ax.plot(df["tanggal"], df["pemakaian"], label="Konsumsi")
-ax.axhline(y=safety_stock, linestyle="--", label="Safety Stock")
+        # KPI
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("Stok Saat Ini", f"{current_stock:,.0f}")
+        col2.metric("DOI", f"{doi:.1f} hari")
+        col3.metric("Safety Stock", f"{safety_stock:,.0f}")
+        col4.metric("ROP", f"{rop:,.0f}")
 
-ax.legend()
-st.pyplot(fig)
-
-# ========================
-# ESTIMASI HARI OPERASI
-# ========================
-st.subheader("⏳ Estimasi Hari Operasi Pabrik")
-
-min_days = current_stock / max_consumption
-normal_days = current_stock / avg_consumption
-max_days = current_stock / df["pemakaian"].min()
-
-c1, c2, c3 = st.columns(3)
-c1.metric("Minimum", f"{min_days:.1f} hari")
-c2.metric("Normal", f"{normal_days:.1f} hari")
-c3.metric("Maksimum", f"{max_days:.1f} hari")
-
-# ========================
-# REORDER ALERT
-# ========================
-st.subheader("🚨 Reorder Alert")
-
-if current_stock <= rop:
-    st.error("Stok mendekati ROP! Segera pesan bahan baku.")
-else:
-    st.success("Stok masih aman.")
-
-# ========================
-# FORECAST
-# ========================
-st.subheader("🔮 Forecast Kebutuhan")
-
-df["forecast"] = df["pemakaian"].rolling(3).mean()
-
-fig2, ax2 = plt.subplots()
-ax2.plot(df["tanggal"], df["pemakaian"], label="Aktual")
-ax2.plot(df["tanggal"], df["forecast"], label="Forecast")
-ax2.legend()
-
-st.pyplot(fig2)
+        # Grafik
+        fig, ax = plt.subplots()
+        ax.plot(df["tanggal"], df["stok_akhir"], label="Stok")
+        ax.plot(df["tanggal"], df["pemakaian"], label="Pemakaian")
+        ax.axhline(y=safety_stock, linestyle="--", label="Safety Stock")
+        ax.legend()
+        st.pyplot(fig)
